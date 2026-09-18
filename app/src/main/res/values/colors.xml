@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_dark">#1A1A1A</color>
+    <color name="overlay">#99000000</color>
+    <color name="accent">#E8A87C</color>
+    <color name="text_primary">#F5F0E8</color>
+    <color name="text_secondary">#B8B0A4</color>
+    <color name="button_bg">#2C2C2C</color>
+</resources>
