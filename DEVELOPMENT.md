@@ -8,7 +8,7 @@ Android App：摄像头对准**实体纸质书页**，用语音或按钮触发�
 
 - **没有电子书库**：正文只来自当前画面
 - **不用纯 OCR**：用豆包多模态理解版面、阅读顺序、区分正文 vs 生词/页眉页脚
-- **朗读**：系统 `TextToSpeech`
+- **朗读**：豆包语音合成 2.0（小何），失败时回退系统 `TextToSpeech`
 
 主流程：
 
@@ -98,7 +98,8 @@ VOLC_ASR_ACCESS_TOKEN=AccessToken
 |------|------|
 | `MainActivity.kt` | 相机、按钮、「语音指令」二次点击录音、读页编排、调试文案 |
 | `DoubaoVisionClient.kt` | 方舟多模态：JPEG base64 → Chat Completions；`thinking: disabled` |
-| `PageReader.kt` | 调视觉识别 + TTS |
+| `PageReader.kt` | 调视觉识别 + 朗读（云端 TTS，失败回退系统语音） |
+| `VolcTtsClient.kt` | 豆包语音合成 2.0：HTTP NDJSON → PCM |
 | `CloudVoiceCommander.kt` | 录音 → ASR 串联 |
 | `PcmWavRecorder.kt` | AudioRecord 16kHz / 16bit / mono → WAV |
 | `VolcAsrClient.kt` | 火山 ASR WebSocket 二进制协议 |
@@ -186,7 +187,7 @@ https://www.volcengine.com/docs/6561/1354869
 
 - [ ] 翻页后自动继续读 / 「继续」语音指令
 - [ ] 段落选择（「读第二段」）依赖更强版面理解
-- [ ] 云端 TTS（音质更好）替换系统 TTS
+- [x] 云端 TTS：豆包语音合成 2.0，`seed-tts-2.0`，音色 `zh_female_xiaohe_uranus_bigtts`（小何）。鉴权复用 `VOLC_ASR_*`。系统 TTS 仅作失败回退
 - [ ] 删除无用的 `VoiceCommandHelper`
 - [ ] 密钥迁到服务端；Release 签名与混淆
 - [ ] 若官方文档有 nostream 示例差异，对照 `VolcAsrClient` 再校准

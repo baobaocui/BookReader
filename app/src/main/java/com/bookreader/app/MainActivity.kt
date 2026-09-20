@@ -229,7 +229,15 @@ class MainActivity : AppCompatActivity() {
                             }
                             binding.resultText.text = text
                             setStatus(getString(R.string.status_speaking))
-                            pageReader.speak(text) {
+                            pageReader.speak(
+                                text,
+                                onProgress = { msg ->
+                                    runOnUiThread {
+                                        setStatus(msg)
+                                        appendDebug(msg)
+                                    }
+                                }
+                            ) {
                                 runOnUiThread {
                                     isProcessing = false
                                     setStatus(getString(R.string.status_ready))
