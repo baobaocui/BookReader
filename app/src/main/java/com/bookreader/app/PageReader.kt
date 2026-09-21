@@ -80,7 +80,9 @@ class PageReader(private val context: Context) {
         speakJob = scope.launch {
             try {
                 if (ApiConfig.isAsrConfigured) {
-                    onProgress?.invoke("正在合成朗读（${ApiConfig.TTS_SPEAKER_NAME}）…")
+                    onProgress?.invoke(
+                        "正在合成朗读（${ApiConfig.TTS_SPEAKER_NAME} ${SpeechPrefs.format(SpeechPrefs.getSpeed(context))}）…"
+                    )
                     withContext(Dispatchers.IO) {
                         playCloud(trimmed) {
                             onProgress?.invoke("正在朗读…")
@@ -122,10 +124,11 @@ class PageReader(private val context: Context) {
 
     private fun playCloud(text: String, onFirstAudio: () -> Unit) {
         resetTrack()
+        val speechRate = SpeechPrefs.toApiSpeechRate(SpeechPrefs.getSpeed(context))
         var started = false
         for (chunk in chunkForTts(text)) {
             if (speakJob?.isActive != true) return
-            streamChunk(chunk) { pcm ->
+            streamChunk(chunk, speechRate) { pcm ->
                 if (!started) {
                     started = true
                     onFirstAudio()
@@ -136,18 +139,23 @@ class PageReader(private val context: Context) {
         awaitPlayback()
     }
 
-    private fun streamChunk(text: String, onPcm: (ByteArray) -> Unit) {
+    private fun streamChunk(text: String, speechRate: Int, onPcm: (ByteArray) -> Unit) {
         if (text.isBlank() || speakJob?.isActive != true) return
         try {
-            ttsClient.streamPcm(text, isActive = { speakJob?.isActive == true }, onPcm)
+            ttsClient.streamPcm(
+                text,
+                speechRate = speechRate,
+                isActive = { speakJob?.isActive == true },
+                onPcm = onPcm
+            )
         } catch (e: IllegalStateException) {
             val message = e.message.orEmpty()
             val tooLong = message.contains("ExceededTextLimit", ignoreCase = true) ||
                 message.contains("max limit", ignoreCase = true)
             if (!tooLong || text.length < 40) throw e
             val mid = text.length / 2
-            streamChunk(text.substring(0, mid).trim(), onPcm)
-            streamChunk(text.substring(mid).trim(), onPcm)
+            streamChunk(text.substring(0, mid).trim(), speechRate, onPcm)
+            streamChunk(text.substring(mid).trim(), speechRate, onPcm)
         }
     }
 
@@ -254,6 +262,7 @@ class PageReader(private val context: Context) {
                 finishSystem()
                 return@suspendCancellableCoroutine
             }
+            engine.setSpeechRate(SpeechPrefs.getSpeed(context))
             val lastId = UUID.randomUUID().toString()
             chunks.forEachIndexed { index, chunk ->
                 val mode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD

@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.os.Bundle
 import android.util.Log
 import android.util.Size
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -78,6 +79,8 @@ class MainActivity : AppCompatActivity() {
         // 启动时打印语音诊断，方便逐步调试
         binding.resultText.text = VoiceDiagnostics.report(this)
 
+        setupSpeechRateBar()
+
         binding.btnHoldSpeak.setOnClickListener {
             if (!hasPermissions()) {
                 requestPermissions()
@@ -115,6 +118,26 @@ class MainActivity : AppCompatActivity() {
         } else {
             requestPermissions()
         }
+    }
+
+    private fun setupSpeechRateBar() {
+        val speed = SpeechPrefs.getSpeed(this)
+        binding.speechRateBar.max = SpeechPrefs.maxProgress
+        binding.speechRateBar.progress = SpeechPrefs.toProgress(speed)
+        binding.speechRateValue.text = SpeechPrefs.format(speed)
+        binding.speechRateBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                binding.speechRateValue.text = SpeechPrefs.format(SpeechPrefs.fromProgress(progress))
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val next = SpeechPrefs.fromProgress(seekBar?.progress ?: SpeechPrefs.toProgress(SpeechPrefs.DEFAULT))
+                SpeechPrefs.setSpeed(this@MainActivity, next)
+                binding.speechRateValue.text = SpeechPrefs.format(next)
+            }
+        })
     }
 
     private fun onVoiceButtonClicked() {

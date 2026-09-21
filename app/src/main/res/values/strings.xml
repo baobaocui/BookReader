@@ -5,6 +5,8 @@
     <string name="btn_hold_speak">语音指令</string>
     <string name="btn_read_now">读当前页</string>
     <string name="btn_stop">停止</string>
+    <string name="speech_rate_label">语速</string>
+    <string name="speech_rate_default">1.0×</string>
     <string name="status_ready">就绪</string>
     <string name="status_listening">录音中…说「帮我读这一页」，再点一次结束</string>
     <string name="status_capture">正在抓取书页…</string>
