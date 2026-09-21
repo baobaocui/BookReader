@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BookReader</string>
-    <string name="hint_aim_page">对准书页点「读当前页」。语音需配置云端 ASR 后，点「语音指令」说完再点一次结束</string>
+    <string name="hint_aim_page">对准书页点「读当前页」。读完后翻页会自动接着读，点「停止」结束。语音：点「语音指令」说完再点一次结束</string>
     <string name="btn_hold_speak">语音指令</string>
     <string name="btn_read_now">读当前页</string>
     <string name="btn_stop">停止</string>
@@ -10,6 +10,8 @@
     <string name="status_capture">正在抓取书页…</string>
     <string name="status_ocr">豆包分析中…</string>
     <string name="status_speaking">正在朗读…</string>
+    <string name="status_wait_turn">本页读完。翻到下一页并停稳后会自动继续</string>
+    <string name="status_page_turned">检测到翻页，正在读新页…</string>
     <string name="permission_required">需要相机和麦克风权限才能使用</string>
     <string name="ocr_empty">未识别到正文，请对准书页并保证光线充足</string>
     <string name="api_not_configured">未配置豆包 API：在 local.properties 填写 DOUBAO_API_KEY 与 DOUBAO_MODEL_ID 后重新编译</string>

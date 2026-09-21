@@ -96,7 +96,9 @@ VOLC_ASR_ACCESS_TOKEN=AccessToken
 
 | 文件 | 职责 |
 |------|------|
-| `MainActivity.kt` | 相机、按钮、「语音指令」二次点击录音、读页编排、调试文案 |
+| `MainActivity.kt` | 相机、按钮、「语音指令」二次点击录音、读页编排、翻页后续读 |
+| `PageTurnDetector.kt` | 预览流抽样，约 200ms 一帧 |
+| `PageTurnTracker.kt` | 翻页判定：运动量 + 中心区域 dHash。停稳且和上一页不同才触发 |
 | `DoubaoVisionClient.kt` | 方舟多模态：JPEG base64 → Chat Completions；`thinking: disabled` |
 | `PageReader.kt` | 调视觉识别 + 朗读（云端 TTS，失败回退系统语音） |
 | `VolcTtsClient.kt` | 豆包语音合成 2.0：HTTP NDJSON → PCM |
@@ -185,7 +187,8 @@ https://www.volcengine.com/docs/6561/1354869
 
 ## 8. 建议的后续功能（未做）
 
-- [ ] 翻页后自动继续读 / 「继续」语音指令
+- [x] 翻页后自动继续读：读完一页后看预览流，新手停稳才再抓一张高清图走豆包。点「停止」结束。不把每一帧送给视觉模型
+- [ ] 「继续」语音指令
 - [ ] 段落选择（「读第二段」）依赖更强版面理解
 - [x] 云端 TTS：豆包语音合成 2.0，`seed-tts-2.0`，音色 `zh_female_xiaohe_uranus_bigtts`（小何）。鉴权复用 `VOLC_ASR_*`。系统 TTS 仅作失败回退
 - [ ] 删除无用的 `VoiceCommandHelper`

@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -24,6 +25,7 @@ import androidx.lifecycle.lifecycleScope
 import com.bookreader.app.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -32,11 +34,18 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var analysisExecutor: ExecutorService
     private lateinit var pageReader: PageReader
     private val cloudVoice = CloudVoiceCommander()
+    private val pageTurnDetector = PageTurnDetector {
+        runOnUiThread { onAutoPageTurn() }
+    }
 
     private var imageCapture: ImageCapture? = null
     private var isProcessing = false
+    private var watchTurns = false
+    private var pageTurnAvailable = false
+    private var readGeneration = 0
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -56,6 +65,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        analysisExecutor = Executors.newSingleThreadExecutor()
         pageReader = PageReader(this)
         pageReader.initTts { ready ->
             if (!ready) {
@@ -85,6 +95,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnStop.setOnClickListener {
+            readGeneration++
+            watchTurns = false
+            pageTurnDetector.disarm()
             pageReader.stopSpeaking()
             cloudVoice.cancel()
             isProcessing = false
@@ -131,6 +144,7 @@ class MainActivity : AppCompatActivity() {
                     isProcessing = false
                     setStatus("语音识别失败：${e.message}")
                     appendDebug("ASR失败：${e.message}")
+                    if (watchTurns && pageTurnAvailable) pageTurnDetector.arm()
                 }
             }
             return
@@ -143,6 +157,7 @@ class MainActivity : AppCompatActivity() {
 
         try {
             isProcessing = true
+            pageTurnDetector.disarm()
             cloudVoice.startRecording()
             setStatus(getString(R.string.status_listening))
             binding.btnHoldSpeak.text = "结束录音"
@@ -155,13 +170,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleVoiceResult(utterance: String) {
         binding.resultText.text = "语音：$utterance"
+        isProcessing = false
         if (ReadIntentParser.isReadRequest(utterance)) {
-            isProcessing = false
             captureAndRead()
+        } else if (watchTurns && pageTurnAvailable) {
+            pageTurnDetector.arm()
+            setStatus(getString(R.string.status_wait_turn))
         } else {
-            isProcessing = false
             setStatus(getString(R.string.intent_not_read))
         }
+    }
+
+    private fun onAutoPageTurn() {
+        if (isDestroyed || !watchTurns || isProcessing) return
+        appendDebug("检测到翻页")
+        setStatus(getString(R.string.status_page_turned))
+        captureAndRead()
     }
 
     private fun captureAndRead() {
@@ -181,9 +205,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
         isProcessing = true
+        val generation = readGeneration
+        pageTurnDetector.disarm()
+        pageTurnDetector.lockCurrentPage()
         setStatus(getString(R.string.status_capture))
-        appendDebug("点击读当前页")
-        Log.e(TAG, "点击读当前页，开始 takePicture")
+        appendDebug("开始读当前页")
+        Log.e(TAG, "开始读当前页，takePicture")
 
         capture.takePicture(
             cameraExecutor,
@@ -198,56 +225,79 @@ class MainActivity : AppCompatActivity() {
                     } finally {
                         image.close()
                     }
+                    if (generation != readGeneration) {
+                        if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
+                        return
+                    }
                     if (bitmap == null) {
                         runOnUiThread {
-                            isProcessing = false
-                            setStatus("抓取画面失败")
+                            if (generation != readGeneration) return@runOnUiThread
                             appendDebug("抓取画面失败")
+                            resumeWatchIfNeeded()
+                            if (!watchTurns) setStatus("抓取画面失败")
                         }
                         return
                     }
                     runOnUiThread {
+                        if (generation != readGeneration) {
+                            if (!bitmap.isRecycled) bitmap.recycle()
+                            return@runOnUiThread
+                        }
                         setStatus(getString(R.string.status_ocr))
                         appendDebug("拍照成功 ${bitmap.width}x${bitmap.height}，开始调豆包")
                     }
                     lifecycleScope.launch {
+                        if (generation != readGeneration) {
+                            if (!bitmap.isRecycled) bitmap.recycle()
+                            return@launch
+                        }
                         try {
                             val text = withContext(Dispatchers.IO) {
                                 pageReader.recognizeText(bitmap) { msg ->
                                     runOnUiThread {
+                                        if (generation != readGeneration) return@runOnUiThread
                                         setStatus(msg)
                                         appendDebug(msg)
                                     }
                                 }
                             }
                             if (!bitmap.isRecycled) bitmap.recycle()
+                            if (generation != readGeneration) return@launch
                             if (text.isBlank() || text == "无法识别") {
                                 binding.resultText.text = getString(R.string.ocr_empty)
-                                setStatus(getString(R.string.ocr_empty))
-                                isProcessing = false
+                                appendDebug(getString(R.string.ocr_empty))
+                                resumeWatchIfNeeded()
+                                if (!watchTurns) setStatus(getString(R.string.ocr_empty))
                                 return@launch
                             }
+                            watchTurns = pageTurnAvailable
                             binding.resultText.text = text
                             setStatus(getString(R.string.status_speaking))
                             pageReader.speak(
                                 text,
                                 onProgress = { msg ->
                                     runOnUiThread {
+                                        if (generation != readGeneration) return@runOnUiThread
                                         setStatus(msg)
                                         appendDebug(msg)
                                     }
                                 }
                             ) {
                                 runOnUiThread {
-                                    isProcessing = false
-                                    setStatus(getString(R.string.status_ready))
+                                    if (isDestroyed || generation != readGeneration) return@runOnUiThread
+                                    resumeWatchIfNeeded()
                                 }
                             }
+                        } catch (e: CancellationException) {
+                            if (!bitmap.isRecycled) bitmap.recycle()
+                            throw e
                         } catch (e: Exception) {
+                            if (!bitmap.isRecycled) bitmap.recycle()
+                            if (generation != readGeneration) return@launch
                             Log.e(TAG, "识别流程失败", e)
-                            isProcessing = false
-                            setStatus("识别失败：${e.message}")
                             appendDebug("识别失败：${e.message}")
+                            resumeWatchIfNeeded()
+                            if (!watchTurns) setStatus("识别失败：${e.message}")
                         }
                     }
                 }
@@ -255,13 +305,25 @@ class MainActivity : AppCompatActivity() {
                 override fun onError(exception: ImageCaptureException) {
                     Log.e(TAG, "拍照失败", exception)
                     runOnUiThread {
-                        isProcessing = false
-                        setStatus("拍照失败：${exception.message}")
+                        if (generation != readGeneration) return@runOnUiThread
                         appendDebug("拍照失败：${exception.message}")
+                        resumeWatchIfNeeded()
+                        if (!watchTurns) setStatus("拍照失败：${exception.message}")
                     }
                 }
             }
         )
+    }
+
+    private fun resumeWatchIfNeeded() {
+        isProcessing = false
+        if (watchTurns && pageTurnAvailable) {
+            pageTurnDetector.arm()
+            setStatus(getString(R.string.status_wait_turn))
+            Log.e(TAG, "等待翻页")
+        } else {
+            setStatus(getString(R.string.status_ready))
+        }
     }
 
     private fun appendDebug(msg: String) {
@@ -286,33 +348,80 @@ class MainActivity : AppCompatActivity() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
-            val previewView = binding.previewView
+            val selector = CameraSelector.DEFAULT_BACK_CAMERA
             val preview = Preview.Builder().build()
-            preview.setSurfaceProvider(previewView.surfaceProvider)
-            imageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                .setResolutionSelector(
-                    ResolutionSelector.Builder()
-                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-                        .setResolutionStrategy(
-                            ResolutionStrategy(
-                                Size(1280, 960),
-                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
-                            )
-                        )
-                        .build()
-                )
-                .build()
-
+            preview.setSurfaceProvider(binding.previewView.surfaceProvider)
+            val capture = buildImageCapture()
+            val analysis = buildImageAnalysis()
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
-                this,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                preview,
-                imageCapture
-            )
+            try {
+                cameraProvider.bindToLifecycle(this, selector, preview, capture, analysis)
+                imageCapture = capture
+                pageTurnAvailable = true
+                Log.e(TAG, "相机已绑定，翻页检测开启")
+            } catch (e: Exception) {
+                Log.e(TAG, "含分析流的绑定失败，翻页检测不可用", e)
+                try {
+                    cameraProvider.unbindAll()
+                    val fallbackPreview = Preview.Builder().build()
+                    fallbackPreview.setSurfaceProvider(binding.previewView.surfaceProvider)
+                    val fallbackCapture = buildImageCapture()
+                    cameraProvider.bindToLifecycle(this, selector, fallbackPreview, fallbackCapture)
+                    imageCapture = fallbackCapture
+                    pageTurnAvailable = false
+                } catch (fallback: Exception) {
+                    Log.e(TAG, "相机绑定失败", fallback)
+                    pageTurnAvailable = false
+                    setStatus("相机启动失败：${fallback.message}")
+                    return@addListener
+                }
+            }
             setStatus(getString(R.string.status_ready))
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun buildImageCapture(): ImageCapture {
+        return ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(1280, 960),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                        )
+                    )
+                    .build()
+            )
+            .build()
+    }
+
+    private fun buildImageAnalysis(): ImageAnalysis {
+        val analysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(640, 480),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                        )
+                    )
+                    .build()
+            )
+            .build()
+        analysis.setAnalyzer(analysisExecutor) { image ->
+            try {
+                pageTurnDetector.onFrame(image)
+            } catch (e: Exception) {
+                Log.e(TAG, "翻页检测失败", e)
+            } finally {
+                image.close()
+            }
+        }
+        return analysis
     }
 
     private fun hasPermissions(): Boolean {
@@ -331,9 +440,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        readGeneration++
+        watchTurns = false
+        pageTurnDetector.disarm()
         cloudVoice.cancel()
         pageReader.release()
         cameraExecutor.shutdown()
+        analysisExecutor.shutdown()
     }
 
     companion object {
