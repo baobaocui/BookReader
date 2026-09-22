@@ -4,11 +4,15 @@ import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -21,11 +25,14 @@ class DoubaoVisionClient(
     private val apiKey: String = ApiConfig.apiKey,
     private val modelId: String = ApiConfig.modelId
 ) {
+    // 强制 HTTP/1.1：HTTP/2 连接池里偶发 stream 卡住，界面会一直停在「正在上传」。
     private val client = OkHttpClient.Builder()
+        .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(45, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .callTimeout(100, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .callTimeout(55, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -50,36 +57,57 @@ class DoubaoVisionClient(
 
         val body = buildRequestBody(dataUrl)
         progress("请求体已组装 ${body.length / 1024}KB，正在上传…")
+        try {
+            postOnce(body) { progress(it) }
+        } catch (e: SocketTimeoutException) {
+            progress("豆包超时，正在重试…")
+            try {
+                postOnce(body) { progress(it) }
+            } catch (retry: Exception) {
+                progress("失败: ${retry.javaClass.simpleName}: ${retry.message}")
+                throw retry
+            }
+        } catch (e: Exception) {
+            progress("失败: ${e.javaClass.simpleName}: ${e.message}")
+            throw e
+        }
+    }
 
+    private fun postOnce(body: String, progress: (String) -> Unit): String {
         val request = Request.Builder()
             .url(ApiConfig.BASE_URL)
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
             .post(body.toRequestBody(jsonMedia))
             .build()
+        val callClient = client.newBuilder()
+            .eventListener(object : EventListener() {
+                override fun requestBodyEnd(call: Call, byteCount: Long) {
+                    progress("已上传，等待豆包识别…")
+                }
 
+                override fun responseHeadersStart(call: Call) {
+                    progress("豆包开始返回…")
+                }
+            })
+            .build()
         val startedAt = System.currentTimeMillis()
-        try {
-            client.newCall(request).execute().use { response ->
-                val elapsedMs = System.currentTimeMillis() - startedAt
-                val raw = response.body?.string().orEmpty()
-                progress("HTTP ${response.code} 耗时 ${elapsedMs}ms 响应 ${raw.length} 字")
+        callClient.newCall(request).execute().use { response ->
+            val elapsedMs = System.currentTimeMillis() - startedAt
+            val raw = response.body?.string().orEmpty()
+            progress("HTTP ${response.code} 耗时 ${elapsedMs}ms 响应 ${raw.length} 字")
 
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("豆包接口错误 ${response.code}: ${raw.take(300)}")
-                }
-
-                logUsageIfPresent(raw)
-                val text = parseContent(raw)
-                if (text.isBlank()) {
-                    throw IllegalStateException("模型未返回可读正文: ${raw.take(200)}")
-                }
-                progress("成功 textLen=${text.length}")
-                text
+            if (!response.isSuccessful) {
+                throw IllegalStateException("豆包接口错误 ${response.code}: ${raw.take(300)}")
             }
-        } catch (e: Exception) {
-            progress("失败: ${e.javaClass.simpleName}: ${e.message}")
-            throw e
+
+            logUsageIfPresent(raw)
+            val text = parseContent(raw)
+            if (text.isBlank()) {
+                throw IllegalStateException("模型未返回可读正文: ${raw.take(200)}")
+            }
+            progress("成功 textLen=${text.length}")
+            return text
         }
     }
 

@@ -14,6 +14,8 @@
     <string name="status_speaking">正在朗读…</string>
     <string name="status_wait_turn">本页读完。翻到下一页并停稳后会自动继续</string>
     <string name="status_page_turned">检测到翻页，正在读新页…</string>
+    <string name="status_same_page">内容和上一页相同，已跳过。请翻到下一页</string>
+    <string name="status_vision_timeout">豆包超时，已跳过。请再对准书页或点「读当前页」</string>
     <string name="permission_required">需要相机和麦克风权限才能使用</string>
     <string name="ocr_empty">未识别到正文，请对准书页并保证光线充足</string>
     <string name="api_not_configured">未配置豆包 API：在 local.properties 填写 DOUBAO_API_KEY 与 DOUBAO_MODEL_ID 后重新编译</string>
