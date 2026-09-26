@@ -103,7 +103,10 @@ class PageReader(private val context: Context) {
                         }
                     }
                     TtsEngine.VOLC -> {
-                        onProgress?.invoke("正在合成朗读（${ApiConfig.TTS_SPEAKER_NAME}）…")
+                        val rateLabel = SpeechPrefs.format(SpeechPrefs.getSpeed(context))
+                        onProgress?.invoke(
+                            "正在合成朗读（${ApiConfig.TTS_SPEAKER_NAME} $rateLabel）…"
+                        )
                         withContext(Dispatchers.IO) {
                             playVolc(trimmed) {
                                 onProgress?.invoke("正在朗读…")
@@ -173,10 +176,11 @@ class PageReader(private val context: Context) {
     private fun playVolc(text: String, onFirstAudio: () -> Unit) {
         playSampleRate = VolcTtsClient.SAMPLE_RATE
         resetTrack()
+        val speechRate = SpeechPrefs.toApiSpeechRate(SpeechPrefs.getSpeed(context))
         var started = false
         for (chunk in chunkForTts(text, maxLen = 300)) {
             if (speakJob?.isActive != true) return
-            streamVolcChunk(chunk) { pcm ->
+            streamVolcChunk(chunk, speechRate) { pcm ->
                 if (!started) {
                     started = true
                     onFirstAudio()
@@ -187,18 +191,23 @@ class PageReader(private val context: Context) {
         awaitPlayback()
     }
 
-    private fun streamVolcChunk(text: String, onPcm: (ByteArray) -> Unit) {
+    private fun streamVolcChunk(text: String, speechRate: Int, onPcm: (ByteArray) -> Unit) {
         if (text.isBlank() || speakJob?.isActive != true) return
         try {
-            volcTts.streamPcm(text, isActive = { speakJob?.isActive == true }, onPcm)
+            volcTts.streamPcm(
+                text,
+                speechRate = speechRate,
+                isActive = { speakJob?.isActive == true },
+                onPcm = onPcm
+            )
         } catch (e: IllegalStateException) {
             val message = e.message.orEmpty()
             val tooLong = message.contains("ExceededTextLimit", ignoreCase = true) ||
                 message.contains("max limit", ignoreCase = true)
             if (!tooLong || text.length < 40) throw e
             val mid = text.length / 2
-            streamVolcChunk(text.substring(0, mid).trim(), onPcm)
-            streamVolcChunk(text.substring(mid).trim(), onPcm)
+            streamVolcChunk(text.substring(0, mid).trim(), speechRate, onPcm)
+            streamVolcChunk(text.substring(mid).trim(), speechRate, onPcm)
         }
     }
 
@@ -308,6 +317,7 @@ class PageReader(private val context: Context) {
                 finishSystem()
                 return@suspendCancellableCoroutine
             }
+            engine.setSpeechRate(SpeechPrefs.getSpeed(context))
             val lastId = UUID.randomUUID().toString()
             chunks.forEachIndexed { index, chunk ->
                 val mode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD

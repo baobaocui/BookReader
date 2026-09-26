@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.os.Bundle
 import android.util.Log
 import android.util.Size
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -47,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var watchTurns = false
     private var pageTurnAvailable = false
     private var readGeneration = 0
+    private var lastReadText = ""
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -81,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         binding.resultText.text = VoiceDiagnostics.report(this)
 
         binding.btnTtsEngine.setOnClickListener { showTtsPicker() }
+        setupSpeechRateBar()
 
         binding.btnHoldSpeak.setOnClickListener {
             if (!hasPermissions()) {
@@ -101,6 +104,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnStop.setOnClickListener {
             readGeneration++
             watchTurns = false
+            lastReadText = ""
             pageTurnDetector.disarm()
             pageReader.stopSpeaking()
             cloudVoice.cancel()
@@ -160,6 +164,28 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun setupSpeechRateBar() {
+        val speed = SpeechPrefs.getSpeed(this)
+        binding.speechRateBar.max = SpeechPrefs.maxProgress
+        binding.speechRateBar.progress = SpeechPrefs.toProgress(speed)
+        binding.speechRateValue.text = SpeechPrefs.format(speed)
+        binding.speechRateBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                binding.speechRateValue.text = SpeechPrefs.format(SpeechPrefs.fromProgress(progress))
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val next = SpeechPrefs.fromProgress(
+                    seekBar?.progress ?: SpeechPrefs.toProgress(SpeechPrefs.DEFAULT)
+                )
+                SpeechPrefs.setSpeed(this@MainActivity, next)
+                binding.speechRateValue.text = SpeechPrefs.format(next)
+            }
+        })
     }
 
     private fun onVoiceButtonClicked() {
@@ -315,6 +341,15 @@ class MainActivity : AppCompatActivity() {
                                 if (!watchTurns) setStatus(getString(R.string.ocr_empty))
                                 return@launch
                             }
+                            if (ReadTextDeduper.isSame(lastReadText, text)) {
+                                Log.e(TAG, "识别内容与上一页相同，跳过朗读")
+                                watchTurns = pageTurnAvailable
+                                binding.resultText.text = text
+                                appendDebug(getString(R.string.status_same_page))
+                                resumeWatchIfNeeded(status = getString(R.string.status_same_page))
+                                return@launch
+                            }
+                            lastReadText = text
                             watchTurns = pageTurnAvailable
                             binding.resultText.text = text
                             setStatus(getString(R.string.status_speaking))
@@ -340,9 +375,15 @@ class MainActivity : AppCompatActivity() {
                             if (!bitmap.isRecycled) bitmap.recycle()
                             if (generation != readGeneration) return@launch
                             Log.e(TAG, "识别流程失败", e)
-                            appendDebug("识别失败：${e.message}")
-                            resumeWatchIfNeeded()
-                            if (!watchTurns) setStatus("识别失败：${e.message}")
+                            val timeout = e is java.net.SocketTimeoutException ||
+                                e.message.orEmpty().contains("timeout", ignoreCase = true)
+                            val msg = if (timeout) {
+                                getString(R.string.status_vision_timeout)
+                            } else {
+                                "识别失败：${e.message}"
+                            }
+                            appendDebug(msg)
+                            resumeWatchIfNeeded(status = msg)
                         }
                     }
                 }
@@ -360,14 +401,15 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun resumeWatchIfNeeded() {
+    private fun resumeWatchIfNeeded(status: String? = null) {
         isProcessing = false
         if (watchTurns && pageTurnAvailable) {
+            pageTurnDetector.lockCurrentPage()
             pageTurnDetector.arm()
-            setStatus(getString(R.string.status_wait_turn))
-            Log.e(TAG, "等待翻页")
+            setStatus(status ?: getString(R.string.status_wait_turn))
+            Log.e(TAG, status ?: "等待翻页")
         } else {
-            setStatus(getString(R.string.status_ready))
+            setStatus(status ?: getString(R.string.status_ready))
         }
     }
 
@@ -487,6 +529,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         readGeneration++
         watchTurns = false
+        lastReadText = ""
         pageTurnDetector.disarm()
         cloudVoice.cancel()
         pageReader.release()
