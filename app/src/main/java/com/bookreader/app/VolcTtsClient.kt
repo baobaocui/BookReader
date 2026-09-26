@@ -34,7 +34,12 @@ class VolcTtsClient(
         activeCall.getAndSet(null)?.cancel()
     }
 
-    fun streamPcm(text: String, isActive: () -> Boolean, onPcm: (ByteArray) -> Unit) {
+    fun streamPcm(
+        text: String,
+        speechRate: Int = 0,
+        isActive: () -> Boolean,
+        onPcm: (ByteArray) -> Unit
+    ) {
         if (appId.isBlank() || accessToken.isBlank()) {
             throw IllegalStateException("未配置 VOLC_ASR_APP_ID / VOLC_ASR_ACCESS_TOKEN")
         }
@@ -53,6 +58,7 @@ class VolcTtsClient(
                         JSONObject()
                             .put("format", "pcm")
                             .put("sample_rate", SAMPLE_RATE)
+                            .put("speech_rate", speechRate.coerceIn(-50, 100))
                     )
                     .put("additions", additions)
             )
