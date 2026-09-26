@@ -24,7 +24,9 @@ import kotlinx.coroutines.withContext
 
 class PageReader(private val context: Context) {
     private val visionClient = DoubaoVisionClient()
-    private val ttsClient = VolcTtsClient()
+    private val volcTts = VolcTtsClient()
+    private val azureTts = AzureTtsClient()
+    private val prefs = TtsPreferences(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private var tts: TextToSpeech? = null
@@ -36,12 +38,19 @@ class PageReader(private val context: Context) {
     private var audioTrack: AudioTrack? = null
     private var pendingByte: Int = -1
     private var framesWritten = 0
+    private var playSampleRate = CLOUD_SAMPLE_RATE
+
+    fun currentEngine(): TtsEngine = prefs.getEngine()
+
+    fun setEngine(engine: TtsEngine) {
+        prefs.setEngine(engine)
+    }
 
     fun initTts(onReady: (Boolean) -> Unit) {
         tts = TextToSpeech(context.applicationContext) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
             if (ttsReady) {
-                tts?.language = Locale.SIMPLIFIED_CHINESE
+                applySystemLocale(prefs.getEngine())
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) = Unit
                     override fun onDone(utteranceId: String?) {
@@ -77,26 +86,43 @@ class PageReader(private val context: Context) {
             return
         }
         onSpeakDone = onDone
+        val requested = prefs.getEngine()
+        val engine = resolveEngine(requested)
+        if (engine != requested) {
+            onProgress?.invoke("${requested.shortLabel}未配置，改用${engine.shortLabel}")
+        }
         speakJob = scope.launch {
             try {
-                if (ApiConfig.isAsrConfigured) {
-                    onProgress?.invoke("正在合成朗读（${ApiConfig.TTS_SPEAKER_NAME}）…")
-                    withContext(Dispatchers.IO) {
-                        playCloud(trimmed) {
-                            onProgress?.invoke("正在朗读…")
+                when (engine) {
+                    TtsEngine.AZURE -> {
+                        onProgress?.invoke("正在合成朗读（Azure）…")
+                        withContext(Dispatchers.IO) {
+                            playAzure(trimmed) {
+                                onProgress?.invoke("正在朗读…")
+                            }
                         }
                     }
-                } else {
-                    speakWithSystem(trimmed)
+                    TtsEngine.VOLC -> {
+                        onProgress?.invoke("正在合成朗读（${ApiConfig.TTS_SPEAKER_NAME}）…")
+                        withContext(Dispatchers.IO) {
+                            playVolc(trimmed) {
+                                onProgress?.invoke("正在朗读…")
+                            }
+                        }
+                    }
+                    TtsEngine.SYSTEM -> {
+                        onProgress?.invoke("正在朗读（系统）…")
+                        speakWithSystem(trimmed)
+                    }
                 }
                 finishSpeak()
             } catch (_: CancellationException) {
                 // 停止按钮已经回调过
             } catch (e: Exception) {
                 if (!isActive) return@launch
-                Log.e(TAG, "云端朗读失败，改用系统语音", e)
+                Log.e(TAG, "${engine.shortLabel}朗读失败，改用系统语音", e)
                 releaseTrack()
-                onProgress?.invoke("云端朗读失败，改用系统语音")
+                onProgress?.invoke("${engine.shortLabel}朗读失败，改用系统语音")
                 try {
                     speakWithSystem(trimmed)
                 } catch (cancelled: CancellationException) {
@@ -120,12 +146,37 @@ class PageReader(private val context: Context) {
         ttsReady = false
     }
 
-    private fun playCloud(text: String, onFirstAudio: () -> Unit) {
+    private fun resolveEngine(requested: TtsEngine): TtsEngine {
+        if (TtsEngine.isAvailable(requested)) return requested
+        return TtsEngine.preferredDefault().let {
+            if (TtsEngine.isAvailable(it)) it else TtsEngine.SYSTEM
+        }
+    }
+
+    private fun playAzure(text: String, onFirstAudio: () -> Unit) {
+        playSampleRate = AzureTtsClient.SAMPLE_RATE
         resetTrack()
         var started = false
-        for (chunk in chunkForTts(text)) {
+        for (chunk in chunkForTts(text, maxLen = 1200)) {
             if (speakJob?.isActive != true) return
-            streamChunk(chunk) { pcm ->
+            val pcm = azureTts.synthesizePcm(chunk) { speakJob?.isActive == true }
+            if (pcm.isEmpty()) continue
+            if (!started) {
+                started = true
+                onFirstAudio()
+            }
+            writePcm(pcm)
+        }
+        awaitPlayback()
+    }
+
+    private fun playVolc(text: String, onFirstAudio: () -> Unit) {
+        playSampleRate = VolcTtsClient.SAMPLE_RATE
+        resetTrack()
+        var started = false
+        for (chunk in chunkForTts(text, maxLen = 300)) {
+            if (speakJob?.isActive != true) return
+            streamVolcChunk(chunk) { pcm ->
                 if (!started) {
                     started = true
                     onFirstAudio()
@@ -136,18 +187,18 @@ class PageReader(private val context: Context) {
         awaitPlayback()
     }
 
-    private fun streamChunk(text: String, onPcm: (ByteArray) -> Unit) {
+    private fun streamVolcChunk(text: String, onPcm: (ByteArray) -> Unit) {
         if (text.isBlank() || speakJob?.isActive != true) return
         try {
-            ttsClient.streamPcm(text, isActive = { speakJob?.isActive == true }, onPcm)
+            volcTts.streamPcm(text, isActive = { speakJob?.isActive == true }, onPcm)
         } catch (e: IllegalStateException) {
             val message = e.message.orEmpty()
             val tooLong = message.contains("ExceededTextLimit", ignoreCase = true) ||
                 message.contains("max limit", ignoreCase = true)
             if (!tooLong || text.length < 40) throw e
             val mid = text.length / 2
-            streamChunk(text.substring(0, mid).trim(), onPcm)
-            streamChunk(text.substring(mid).trim(), onPcm)
+            streamVolcChunk(text.substring(0, mid).trim(), onPcm)
+            streamVolcChunk(text.substring(mid).trim(), onPcm)
         }
     }
 
@@ -180,12 +231,13 @@ class PageReader(private val context: Context) {
     private fun ensureTrack(): AudioTrack {
         val existing = audioTrack
         if (existing != null && existing.state == AudioTrack.STATE_INITIALIZED) return existing
+        val rate = playSampleRate
         val minBuffer = AudioTrack.getMinBufferSize(
-            VolcTtsClient.SAMPLE_RATE,
+            rate,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        val min = if (minBuffer > 0) minBuffer else VolcTtsClient.SAMPLE_RATE
+        val min = if (minBuffer > 0) minBuffer else rate
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -196,11 +248,11 @@ class PageReader(private val context: Context) {
             .setAudioFormat(
                 AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(VolcTtsClient.SAMPLE_RATE)
+                    .setSampleRate(rate)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
-            .setBufferSizeInBytes(min.coerceAtLeast(VolcTtsClient.SAMPLE_RATE))
+            .setBufferSizeInBytes(min.coerceAtLeast(rate))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         track.play()
@@ -211,7 +263,8 @@ class PageReader(private val context: Context) {
     private fun awaitPlayback() {
         val track = audioTrack ?: return
         val target = framesWritten
-        val timeoutAt = SystemClock.elapsedRealtime() + target * 1000L / VolcTtsClient.SAMPLE_RATE + 1500
+        val rate = playSampleRate.coerceAtLeast(1)
+        val timeoutAt = SystemClock.elapsedRealtime() + target * 1000L / rate + 1500
         while (
             speakJob?.isActive == true &&
             track.playState == AudioTrack.PLAYSTATE_PLAYING &&
@@ -243,6 +296,7 @@ class PageReader(private val context: Context) {
     private suspend fun speakWithSystem(text: String) {
         val engine = tts
         if (!ttsReady || engine == null) return
+        applySystemLocale(TtsEngine.SYSTEM, text)
         suspendCancellableCoroutine { cont ->
             systemDone = { if (cont.isActive) cont.resume(Unit) }
             cont.invokeOnCancellation {
@@ -263,6 +317,15 @@ class PageReader(private val context: Context) {
         }
     }
 
+    private fun applySystemLocale(engine: TtsEngine, text: String = "") {
+        val locale = when {
+            engine != TtsEngine.SYSTEM -> Locale.SIMPLIFIED_CHINESE
+            text.isNotBlank() && AzureTtsClient.preferEnglish(text) -> Locale.US
+            else -> Locale.SIMPLIFIED_CHINESE
+        }
+        tts?.language = locale
+    }
+
     private fun finishSystem() {
         val done = systemDone
         systemDone = null
@@ -276,7 +339,8 @@ class PageReader(private val context: Context) {
     }
 
     private fun cancelActive(notify: Boolean) {
-        ttsClient.cancel()
+        volcTts.cancel()
+        azureTts.cancel()
         speakJob?.cancel()
         speakJob = null
         systemDone = null
@@ -291,7 +355,8 @@ class PageReader(private val context: Context) {
         val buf = StringBuilder()
         for (ch in text) {
             buf.append(ch)
-            val boundary = ch == '。' || ch == '！' || ch == '？' || ch == '\n' || ch == '；'
+            val boundary = ch == '。' || ch == '！' || ch == '？' || ch == '\n' ||
+                ch == '；' || ch == '.' || ch == '!' || ch == '?' || ch == ';'
             if ((boundary && buf.length >= 80) || buf.length >= maxLen) {
                 val piece = buf.toString().trim()
                 if (piece.isNotEmpty()) parts.add(piece)
@@ -305,5 +370,6 @@ class PageReader(private val context: Context) {
 
     companion object {
         private const val TAG = "BookReader"
+        private const val CLOUD_SAMPLE_RATE = 24000
     }
 }

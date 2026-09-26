@@ -9,6 +9,7 @@ import android.util.Log
 import android.util.Size
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -74,9 +75,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        refreshTtsButton()
 
         // 启动时打印语音诊断，方便逐步调试
         binding.resultText.text = VoiceDiagnostics.report(this)
+
+        binding.btnTtsEngine.setOnClickListener { showTtsPicker() }
 
         binding.btnHoldSpeak.setOnClickListener {
             if (!hasPermissions()) {
@@ -115,6 +119,47 @@ class MainActivity : AppCompatActivity() {
         } else {
             requestPermissions()
         }
+    }
+
+    private fun refreshTtsButton() {
+        val engine = pageReader.currentEngine()
+        binding.btnTtsEngine.text = getString(R.string.btn_tts_engine, engine.shortLabel)
+    }
+
+    private fun showTtsPicker() {
+        val engines = TtsEngine.entries
+        val labels = engines.map { engine ->
+            val mark = if (TtsEngine.isAvailable(engine)) "" else "（未配置）"
+            engine.label + mark
+        }.toTypedArray()
+        val checked = engines.indexOf(pageReader.currentEngine()).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.tts_pick_title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                val picked = engines[which]
+                when {
+                    picked == TtsEngine.AZURE && !ApiConfig.isAzureTtsConfigured -> {
+                        Toast.makeText(this, R.string.tts_azure_not_configured, Toast.LENGTH_LONG)
+                            .show()
+                    }
+                    picked == TtsEngine.VOLC && !ApiConfig.isAsrConfigured -> {
+                        Toast.makeText(this, R.string.tts_volc_not_configured, Toast.LENGTH_LONG)
+                            .show()
+                    }
+                    else -> {
+                        pageReader.setEngine(picked)
+                        refreshTtsButton()
+                        Toast.makeText(
+                            this,
+                            getString(R.string.tts_switched, picked.label),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        dialog.dismiss()
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun onVoiceButtonClicked() {

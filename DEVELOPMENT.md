@@ -8,7 +8,7 @@ Android App：摄像头对准**实体纸质书页**，用语音或按钮触发�
 
 - **没有电子书库**：正文只来自当前画面
 - **不用纯 OCR**：用豆包多模态理解版面、阅读顺序、区分正文 vs 生词/页眉页脚
-- **朗读**：豆包语音合成 2.0（小何），失败时回退系统 `TextToSpeech`
+- **朗读**：可切换 **Azure / 豆包小何 / 系统**；默认优先 Azure（便宜、英文自然），失败回退系统 `TextToSpeech`
 
 主流程：
 
@@ -65,9 +65,17 @@ sdk.dir=...你的 Android SDK...
 DOUBAO_API_KEY=ark-xxxxxxxx
 DOUBAO_MODEL_ID=doubao-seed-2-1-turbo-260628
 
-# —— 语音：火山「语音技术」应用（与上面不是同一套 Key）——
+# —— 语音指令 ASR + 豆包朗读：火山「语音技术」应用（与方舟不是同一套 Key）——
 VOLC_ASR_APP_ID=数字AppId
 VOLC_ASR_ACCESS_TOKEN=AccessToken
+
+# —— 朗读：Azure 神经网络 TTS（推荐英文书；比豆包 2.0 便宜很多）——
+AZURE_SPEECH_KEY=你的Speech资源密钥
+AZURE_SPEECH_REGION=eastasia
+# 可选：自定义终点（一般不用）；国内可用 chinanorth2 / chinaeast2 等
+# AZURE_SPEECH_ENDPOINT=https://eastasia.tts.speech.microsoft.com/cognitiveservices/v1
+# AZURE_TTS_VOICE_EN=en-US-JennyNeural
+# AZURE_TTS_VOICE_ZH=zh-CN-XiaoxiaoNeural
 ```
 
 注入方式：`app/build.gradle.kts` 读 local.properties → `BuildConfig` → `ApiConfig`。
@@ -77,7 +85,8 @@ VOLC_ASR_ACCESS_TOKEN=AccessToken
 | 能力 | 控制台 | 字段 |
 |------|--------|------|
 | 看图读页 | [方舟](https://console.volcengine.com/ark) → API Key + 推理接入点 | `DOUBAO_*` |
-| 语音转文字 | [语音应用](https://console.volcengine.com/speech/app) → App ID + Access Token | `VOLC_ASR_*` |
+| 语音转文字 + 豆包朗读 | [语音应用](https://console.volcengine.com/speech/app) → App ID + Access Token | `VOLC_ASR_*` |
+| Azure 朗读 | Azure 门户创建 Speech 资源 → 密钥与区域 | `AZURE_SPEECH_*` |
 
 **重要：** 方舟 `ark-` Key **不能**当语音 ASR 用（会 401）。语音必须单独开语音应用。
 
@@ -100,7 +109,9 @@ VOLC_ASR_ACCESS_TOKEN=AccessToken
 | `PageTurnDetector.kt` | 预览流抽样，约 200ms 一帧 |
 | `PageTurnTracker.kt` | 翻页判定：运动量 + 中心区域 dHash。停稳且和上一页不同才触发 |
 | `DoubaoVisionClient.kt` | 方舟多模态：JPEG base64 → Chat Completions；`thinking: disabled` |
-| `PageReader.kt` | 调视觉识别 + 朗读（云端 TTS，失败回退系统语音） |
+| `PageReader.kt` | 调视觉识别 + 按所选引擎朗读（失败回退系统语音） |
+| `TtsEngine.kt` / `TtsPreferences.kt` | 朗读引擎枚举与本地偏好（Azure / 豆包 / 系统） |
+| `AzureTtsClient.kt` | Azure 神经网络 TTS：SSML → raw 24kHz PCM |
 | `VolcTtsClient.kt` | 豆包语音合成 2.0：HTTP NDJSON → PCM |
 | `CloudVoiceCommander.kt` | 录音 → ASR 串联 |
 | `PcmWavRecorder.kt` | AudioRecord 16kHz / 16bit / mono → WAV |
@@ -190,7 +201,7 @@ https://www.volcengine.com/docs/6561/1354869
 - [x] 翻页后自动继续读：读完一页后看预览流，新手停稳才再抓一张高清图走豆包。点「停止」结束。不把每一帧送给视觉模型
 - [ ] 「继续」语音指令
 - [ ] 段落选择（「读第二段」）依赖更强版面理解
-- [x] 云端 TTS：豆包语音合成 2.0，`seed-tts-2.0`，音色 `zh_female_xiaohe_uranus_bigtts`（小何）。鉴权复用 `VOLC_ASR_*`。系统 TTS 仅作失败回退
+- [x] 多引擎 TTS：界面点「朗读：xxx」切换 **Azure / 豆包小何 / 系统**。Azure 按正文自动选 en/zh 音色；豆包仍用 `seed-tts-2.0` + 小何；失败回退系统 TTS
 - [ ] 删除无用的 `VoiceCommandHelper`
 - [ ] 密钥迁到服务端；Release 签名与混淆
 - [ ] 若官方文档有 nostream 示例差异，对照 `VolcAsrClient` 再校准
@@ -200,10 +211,17 @@ https://www.volcengine.com/docs/6561/1354869
 ## 9. 下次开发检查清单
 
 1. 读本文 + 看 `ApiConfig.kt`、`VolcAsrClient.kt`、`DoubaoVisionClient.kt`、`MainActivity.kt`
-2. 确认 `local.properties` 四项配置齐全，且语音应用仍勾选 **2.0 小时版**
+2. 确认 `local.properties`：方舟两项；若用语音指令再加 `VOLC_ASR_*`；若用 Azure 朗读再加 `AZURE_SPEECH_KEY` / `REGION`
 3. `./gradlew :app:assembleDebug` 后真机安装
-4. 先测「读当前页」，再测「语音指令」
+4. 先测「读当前页」+ 切换朗读引擎，再测「语音指令」
 5. 出问题先 `adb logcat -s BookReader:E`
+
+### Azure TTS 补充
+
+- 国际区：区域如 `eastasia` / `eastus`，终点 `https://{region}.tts.speech.microsoft.com/cognitiveservices/v1`
+- 中国区：区域如 `chinanorth2`，终点走 `*.tts.speech.azure.cn`
+- 免费额度约每月 50 万字符（以门户为准）；英文书优先用 Azure 更划算
+- App 内默认：已配 Azure → 用 Azure；否则有火山凭证 → 豆包；否则系统
 
 ---
 

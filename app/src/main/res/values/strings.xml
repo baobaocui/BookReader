@@ -5,6 +5,11 @@
     <string name="btn_hold_speak">语音指令</string>
     <string name="btn_read_now">读当前页</string>
     <string name="btn_stop">停止</string>
+    <string name="btn_tts_engine">朗读：%1$s</string>
+    <string name="tts_pick_title">选择朗读语音</string>
+    <string name="tts_switched">已切换为%1$s</string>
+    <string name="tts_azure_not_configured">未配置 Azure：在 local.properties 填写 AZURE_SPEECH_KEY 与 AZURE_SPEECH_REGION 后重新编译</string>
+    <string name="tts_volc_not_configured">未配置豆包朗读：需填写 VOLC_ASR_APP_ID / VOLC_ASR_ACCESS_TOKEN</string>
     <string name="status_ready">就绪</string>
     <string name="status_listening">录音中…说「帮我读这一页」，再点一次结束</string>
     <string name="status_capture">正在抓取书页…</string>

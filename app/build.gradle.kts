@@ -36,6 +36,27 @@ android {
             "VOLC_ASR_ACCESS_TOKEN",
             "\"${localProp("VOLC_ASR_ACCESS_TOKEN")}\""
         )
+        buildConfigField("String", "AZURE_SPEECH_KEY", "\"${localProp("AZURE_SPEECH_KEY")}\"")
+        buildConfigField(
+            "String",
+            "AZURE_SPEECH_REGION",
+            "\"${localProp("AZURE_SPEECH_REGION")}\""
+        )
+        buildConfigField(
+            "String",
+            "AZURE_SPEECH_ENDPOINT",
+            "\"${localProp("AZURE_SPEECH_ENDPOINT")}\""
+        )
+        buildConfigField(
+            "String",
+            "AZURE_TTS_VOICE_EN",
+            "\"${localProp("AZURE_TTS_VOICE_EN")}\""
+        )
+        buildConfigField(
+            "String",
+            "AZURE_TTS_VOICE_ZH",
+            "\"${localProp("AZURE_TTS_VOICE_ZH")}\""
+        )
     }
 
     buildTypes {
